@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, text
 from sqlalchemy.exc import IntegrityError
 
 from .db import get_db, Event, Hold, Booking
@@ -48,7 +48,7 @@ async def cleanup_expired_holds():
                 # Get expired holds count before update
                 expired_count_result = await db.execute(
                     select(func.count(Hold.id)).where(
-                        and_(Hold.expires_at <= now, not Hold.is_expired)
+                        and_(Hold.expires_at <= now, Hold.is_expired.is_(False))
                     )
                 )
                 expired_count = expired_count_result.scalar() or 0
@@ -56,7 +56,8 @@ async def cleanup_expired_holds():
                 if expired_count > 0:
                     # Mark expired holds as expired
                     await db.execute(
-                        f"UPDATE holds SET is_expired = true WHERE expires_at <= '{now}' AND is_expired = false"
+                        text("UPDATE holds SET is_expired = true WHERE expires_at <= :now AND is_expired = false"),
+                        {"now": now}
                     )
                     await db.commit()
                     
@@ -172,7 +173,7 @@ async def create_hold(
     async with db.begin():  # Use transaction for concurrency control
         # Check if event exists
         event_result = await db.execute(
-            select(Event).where(Event.id == hold_request.event_id)
+            select(Event).where(Event.id == hold_request.event_id).with_for_update()
         )
         event = event_result.scalar_one_or_none()
         
@@ -195,10 +196,8 @@ async def create_hold(
                 and_(
                     Hold.event_id == hold_request.event_id,
                     Hold.expires_at > now,
-                    not Hold.is_expired,
-                    ~Hold.id.in_(
-                        select(Booking.hold_id).where(Booking.hold_id == Hold.id)
-                    )
+                    Hold.is_expired.is_(False),
+                    ~Hold.id.in_(select(Booking.hold_id))
                 )
             )
         )
@@ -423,10 +422,8 @@ async def get_event_status(
             and_(
                 Hold.event_id == event_id,
                 Hold.expires_at > now,
-                not Hold.is_expired,
-                ~Hold.id.in_(
-                    select(Booking.hold_id).where(Booking.hold_id == Hold.id)
-                )
+                Hold.is_expired.is_(False),
+                ~Hold.id.in_(select(Booking.hold_id))
             )
         )
     )
@@ -484,10 +481,8 @@ async def get_metrics(
         select(func.count(Hold.id)).where(
             and_(
                 Hold.expires_at > now,
-                not Hold.is_expired,
-                ~Hold.id.in_(
-                    select(Booking.hold_id).where(Booking.hold_id == Hold.id)
-                )
+                Hold.is_expired.is_(False),
+                ~Hold.id.in_(select(Booking.hold_id))
             )
         )
     )
@@ -498,7 +493,7 @@ async def get_metrics(
         select(func.count(Hold.id)).where(
             or_(
                 Hold.expires_at <= now,
-                Hold.is_expired
+                Hold.is_expired.is_(True)
             )
         )
     )
@@ -521,10 +516,8 @@ async def get_metrics(
         select(func.coalesce(func.sum(Hold.quantity), 0)).where(
             and_(
                 Hold.expires_at > now,
-                not Hold.is_expired,
-                ~Hold.id.in_(
-                    select(Booking.hold_id).where(Booking.hold_id == Hold.id)
-                )
+                Hold.is_expired.is_(False),
+                ~Hold.id.in_(select(Booking.hold_id))
             )
         )
     )
@@ -536,10 +529,8 @@ async def get_metrics(
             and_(
                 Hold.expires_at > now,
                 Hold.expires_at <= five_minutes_from_now,
-                not Hold.is_expired,
-                ~Hold.id.in_(
-                    select(Booking.hold_id).where(Booking.hold_id == Hold.id)
-                )
+                Hold.is_expired.is_(False),
+                ~Hold.id.in_(select(Booking.hold_id))
             )
         )
     )
