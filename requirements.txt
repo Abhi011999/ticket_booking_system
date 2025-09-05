@@ -5,3 +5,4 @@ sqlalchemy[asyncio]
 pydantic
 python-multipart
 httpx
+structlog
